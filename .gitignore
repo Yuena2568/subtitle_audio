@@ -1,10 +1,89 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+*.pyc
+*.pyo
 build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
 .venv
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 下载和输出文件（用户生成的内容）
+download/
+output/
+subs/
+videos/
+video/
+
+# 敏感信息和配置文件
+cookies.txt
+*.cookies
+.env
+.env.local
+config.ini
+secrets.json
+
+# 临时文件和日志
+*.log
+*.tmp
+*.temp
+found_models.txt
+file_list.txt
+failed_videos.txt
+
+# 音频和视频文件（测试文件）
+*.wav
+*.mp3
+*.mp4
+*.avi
+*.mkv
+*.flv
+*.webm
+*.mov
+*.m4a
+
+# 字幕文件（用户生成的内容）
+*.vtt
+*.srt
+*.json
+*.srt.json
+
+# 模型文件（太大了，不应该提交）
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+
+# Whisper 模型缓存（会自动下载）
+.whisper/
+
+# HuggingFace 模型缓存
+.cache/
+models/
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# yt-dlp 可执行文件（如果需要可以手动下载）
+yt-dlp.exe
+yt-dlp

@@ -1,7 +1,23 @@
 [project]
 name = "subtitle-audio"
 version = "0.1.0"
-description = "Add your description here"
+description = "批量处理视频字幕：智能优化、风格化、翻译、TTS 全流程工具"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "imageio-ffmpeg>=0.6.0",
+    "pydub>=0.25.1",
+    "pysrt>=1.1.2",
+    "pyttsx3>=2.99",
+    # 视频下载功能
+    "yt-dlp>=2023.12.30",
+    # AI Rewrite 功能
+    "transformers>=4.30.0",
+    "torch>=2.0.0",
+    # 翻译功能
+    "requests>=2.28.0",
+    # ASR 功能
+    "openai-whisper>=20230314",
+    # 批量 TTS 功能
+    "edge-tts>=6.1.0",
+]
