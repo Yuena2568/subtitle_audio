@@ -75,7 +75,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. 克隆或下载项目
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/Yuena2568/subtitle_audio.git
 cd subtitle_audio
 ```
 
@@ -87,13 +87,26 @@ uv sync
 ```
 
 这将自动安装以下依赖：
+- `yt-dlp`: YouTube 视频下载
 - `openai-whisper`: ASR 语音识别
 - `edge-tts`: TTS 语音合成
 - `transformers`: AI 模型支持
 - `torch`: PyTorch 深度学习框架
 - `pydub`: 音频处理
-- `imageio-ffmpeg`: FFmpeg 包装器
+- `imageio-ffmpeg`: FFmpeg 包装器（自动管理 FFmpeg）
 - 其他必要的依赖...
+
+### 4. 验证安装
+
+```bash
+# 查看帮助信息
+uv run python workflow.py --help
+
+# 或者测试主程序
+uv run python main.py --help
+```
+
+**✅ 安装完成！** 现在你可以开始使用了。
 
 ## 🤖 需要的模型
 
@@ -470,6 +483,11 @@ uv run python main.py --file "test.vtt" --export
 # 测试完整工作流
 uv run python workflow.py "YOUTUBE_URL"
 ```
+
+## 🔗 相关链接
+
+- **GitHub 仓库**: https://github.com/Yuena2568/subtitle_audio
+- **问题反馈**: https://github.com/Yuena2568/subtitle_audio/issues
 
 ## 📄 许可证
 
