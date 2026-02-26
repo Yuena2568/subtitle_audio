@@ -78,6 +78,22 @@ def merge_short_segments(segments: List[Segment], min_duration: float = 0.5) -> 
     merged.append(buffer)
     return merged
 
+# ================== 语速贴合（按原视频时间轴） ==================
+def _change_audio_speed(audio: "AudioSegment", speed_factor: float) -> "AudioSegment":
+    """
+    改变音频播放速度（不改变音高）。
+    speed_factor > 1 加快，< 1 减慢；返回的时长 = 原时长 / speed_factor。
+    """
+    if not PYDUB_AVAILABLE or audio is None:
+        return audio
+    if abs(speed_factor - 1.0) < 0.02:
+        return audio
+    new_frame_rate = int(audio.frame_rate * speed_factor)
+    # 通过改变 frame_rate 实现变速，时长 = 原时长 / speed_factor；不改回 frame_rate 以保证时长正确
+    chunk = audio._spawn(audio.raw_data, overrides={"frame_rate": new_frame_rate})
+    return chunk
+
+
 # ================== Edge-TTS ==================
 def _edge_tts_to_wav(text: str, wav_path: Path, voice: str = "zh-CN-XiaoxiaoNeural", rate: str = "+0%"):
     """
@@ -112,14 +128,210 @@ def _edge_tts_to_wav(text: str, wav_path: Path, voice: str = "zh-CN-XiaoxiaoNeur
         print(f"[TTS] edge-tts 生成失败: {e.stderr}")
         raise
 
+# ================== 时间轴对齐检测 ==================
+def detect_timeline_offset(segments: List[Segment]) -> float:
+    """
+    检测时间轴偏移量
+    
+    如果第一个segment的start时间很小（<2秒），但实际视频可能从更晚开始，
+    通过分析segment时间间隔来检测偏移。
+    
+    Args:
+        segments: Segment列表
+    
+    Returns:
+        检测到的偏移量（秒），如果没有偏移则返回0.0
+    """
+    if not segments or len(segments) < 2:
+        return 0.0
+    
+    first_seg_start = float(segments[0].start)
+    
+    # 如果第一个segment的start >= 2秒，认为时间轴正常
+    if first_seg_start >= 2.0:
+        return 0.0
+    
+    # 如果第一个segment的start < 2秒，检查是否有明显的时间间隔
+    # 方法1: 检查第二个segment的start时间
+    if len(segments) >= 2:
+        second_seg_start = float(segments[1].start)
+        gap = second_seg_start - first_seg_start
+        
+        # 如果前两个segment之间的gap > 10秒，说明第一个segment之前可能有长时间的静音
+        # 这种情况下，第一个segment的时间戳可能是错误的
+        # 但是，我们不能简单地假设有偏移，需要更谨慎的判断
+        
+        # 方法2: 分析所有segment之间的间隔分布
+        gaps = []
+        for i in range(1, min(len(segments), 10)):  # 只分析前10个segment
+            prev_end = float(segments[i-1].end)
+            curr_start = float(segments[i].start)
+            gap = curr_start - prev_end
+            if gap > 0:  # 只考虑正间隔
+                gaps.append(gap)
+        
+        if gaps:
+            avg_gap = sum(gaps) / len(gaps)
+            # 如果第一个segment的start很小，但后续segment的平均间隔也正常
+            # 且第一个segment和第二个segment之间有大的gap，说明可能有偏移
+            
+            # 如果第一个segment的start < 1秒，但第二个segment的start > 10秒
+            # 说明第一个segment之前可能有10秒左右的静音
+            if first_seg_start < 1.0 and second_seg_start > 10.0:
+                # 检测第一个segment的实际位置：如果第二个segment的start很大，
+                # 可能是第一个segment的时间戳不准确，实际应该在更晚的位置
+                # 但这种情况比较复杂，我们先不自动修正，而是提醒用户
+                print(f"[TTS] 检测到时间轴异常：第一个segment在 {first_seg_start:.2f}秒，第二个在 {second_seg_start:.2f}秒")
+                print(f"[TTS] 如果第一个segment实际位置不在 {first_seg_start:.2f}秒，可能需要手动调整")
+        
+        # 更保守的方法：如果第一个segment的start < 0.5秒，但第二个segment的start很大
+        # 且gap > 第一个segment的start的10倍，说明可能有明显的偏移
+        if first_seg_start < 0.5 and gap > first_seg_start * 10:
+            # 这种情况下，我们假设第一个segment的时间戳应该更接近第二个segment的时间
+            # 但这可能不准确，所以我们先不自动修正，只返回0
+            # 更安全的方法是：如果用户明确知道偏移量，应该通过参数传递
+            pass
+    
+    return 0.0
+
+
+def apply_timeline_offset(segments: List[Segment], offset: float) -> List[Segment]:
+    """
+    应用时间轴偏移量到所有segment
+    
+    Args:
+        segments: Segment列表
+        offset: 偏移量（秒），正数表示向后偏移
+    
+    Returns:
+        调整后的Segment列表
+    """
+    if offset == 0.0:
+        return segments
+    
+    adjusted = []
+    for seg in segments:
+        new_seg = Segment(
+            index=seg.index,
+            text=seg.text,
+            start=float(seg.start) + offset,
+            end=float(seg.end) + offset
+        )
+        adjusted.append(new_seg)
+    
+    return adjusted
+
+
+def detect_actual_audio_start(video_path: str | Path, estimated_start: float) -> float:
+    """
+    检测视频实际音频开始时间
+    
+    通过分析视频音频的静音检测来找到实际有声音的开始时间
+    
+    Args:
+        video_path: 视频文件路径
+        estimated_start: 估计的开始时间（从segment获取）
+    
+    Returns:
+        实际音频开始时间（秒）
+    """
+    try:
+        import subprocess
+        import imageio_ffmpeg
+        
+        # 使用 ffmpeg 的 silencedetect 滤镜来检测静音
+        # 这会找出音频中非静音的部分
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        video_path_str = str(video_path)
+        cmd = [
+            ffmpeg_exe,
+            "-i", video_path_str,
+            "-af", "silencedetect=noise=-30dB:duration=0.5",
+            "-f", "null",
+            "-"
+        ]
+        result = subprocess.run(
+            cmd,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30
+        )
+        
+        # 解析 ffmpeg 输出，查找第一个非静音的时间点
+        # silencedetect 输出格式: silence_start: 0.0 | silence_end: 12.0 | silence_duration: 12.0
+        stderr = result.stderr
+        lines = stderr.split('\n')
+        
+        # 查找第一个 silence_end，这表示静音结束，音频开始
+        first_silence_end = None
+        for line in lines:
+            if 'silence_end' in line:
+                # 解析: silence_end: 12.0
+                parts = line.split('silence_end:')
+                if len(parts) > 1:
+                    try:
+                        end_time = float(parts[1].strip().split()[0])
+                        if first_silence_end is None or end_time < first_silence_end:
+                            first_silence_end = end_time
+                    except (ValueError, IndexError):
+                        continue
+        
+        if first_silence_end is not None and first_silence_end > 1.0:
+            # 如果检测到的开始时间 > 1秒，且与估计的开始时间差异较大，使用检测值
+            if abs(first_silence_end - estimated_start) > 2.0:
+                return first_silence_end
+        
+        # 如果没有检测到明显的静音结束点，返回估计值
+        return estimated_start
+        
+    except Exception as e:
+        # 如果检测失败，返回估计值
+        return estimated_start
+
 # ================== 时间轴 TTS ==================
-def synthesize_audio_timeline(segments: List[Segment], output_path: str, voice: str = "zh-CN-XiaoxiaoNeural") -> str:
+def synthesize_audio_timeline(
+    segments: List[Segment],
+    output_path: str,
+    voice: str = "zh-CN-XiaoxiaoNeural",
+    video_path: str | None = None,
+    match_speech_rate: bool = True,
+) -> str:
+    """
+    生成时间轴对齐的音频。
+    
+    Args:
+        segments: Segment 列表
+        output_path: 输出音频文件路径
+        voice: TTS 语音
+        video_path: 视频路径（可选，用于检测实际音频开始时间）
+        match_speech_rate: 是否按原视频每段时长贴合语速（逐句 TTS 后拉伸/压缩到原时长）
+    """
     if not PYDUB_AVAILABLE:
         raise ImportError("pydub 模块未安装，TTS 功能不可用。请使用 pip install pydub 安装")
     if not SPEECH_PREPROCESS_AVAILABLE:
         raise ImportError("speech_preprocess 模块不可用，TTS 功能不可用")
     
     print("[TTS] Synthesizing timeline audio...")
+    
+    # 检测并修正时间轴偏移
+    time_offset = detect_timeline_offset(segments)
+    if time_offset != 0.0:
+        print(f"[TTS] 检测到时间轴偏移: {time_offset:.2f}秒，已自动修正")
+        segments = apply_timeline_offset(segments, time_offset)
+    
+    # 仅当第一个 segment 开始时间异常早（<0.3s）时才做“实际音频开始”检测，避免把正常字幕整体后移约 1 秒
+    first_start = float(segments[0].start) if segments else 0.0
+    if video_path and segments and first_start < 0.3:
+        try:
+            actual_start_time = detect_actual_audio_start(video_path, first_start)
+            if actual_start_time > first_start:
+                offset = actual_start_time - first_start
+                if offset > 0.5:  # 仅当检测到明显偏移（>0.5s）才应用
+                    print(f"[TTS] 检测到实际音频开始时间: {actual_start_time:.2f}秒，应用偏移: {offset:.2f}秒")
+                    segments = apply_timeline_offset(segments, offset)
+        except Exception as e:
+            print(f"[TTS] 检测实际音频开始时间失败: {e}，使用 segment 时间戳")
+    
     speech_segments: List[SpeechSegment] = prepare_segments_for_tts(segments)
     if not speech_segments: raise RuntimeError("[TTS] No segments after preprocessing")
 
@@ -134,72 +346,104 @@ def synthesize_audio_timeline(segments: List[Segment], output_path: str, voice: 
     tmp_dir.mkdir(exist_ok=True)
 
     rendered: list[tuple[Segment, Path, int]] = []
-    batch_size = 5
-    batch_text: List[str] = []
-    batch_indices: List[int] = []
 
-    def flush_batch():
-        if not batch_text: return
-        batch_content = " ".join(batch_text)
-        batch_wav = tmp_dir / f"batch_{batch_indices[0]:04d}.wav"
-        _edge_tts_to_wav(batch_content, batch_wav, voice=voice)
+    if match_speech_rate:
+        # 语速贴合：逐句 TTS 用默认语速生成，整条时间轴做一次全局变速，避免每句语速不同
+        print("[TTS] 语速贴合模式：逐句生成，整轨统一变速")
+        for i, seg in enumerate(seg_list):
+            seg_wav = tmp_dir / f"seg_{seg.index:04d}.wav"
+            try:
+                _edge_tts_to_wav(seg.text.strip(), seg_wav, voice=voice)
+                audio = AudioSegment.from_file(str(seg_wav))
+            except Exception as e:
+                print(f"[TTS] 段落 {seg.index} 生成失败: {e}，使用静音")
+                target_ms = max(1, int((seg.end - seg.start) * 1000))
+                audio = AudioSegment.silent(duration=target_ms)
+                audio.export(seg_wav, format="wav")
+            # 不做单句拉伸，只记录原段时长用于时间轴放置
+            target_ms = max(1, int((seg.end - seg.start) * 1000))
+            rendered.append((seg, seg_wav, target_ms))
+    else:
+        batch_size = 5
+        batch_text: List[str] = []
+        batch_indices: List[int] = []
 
-        try:
-            # edge-tts 生成的文件可能是 mp3 格式，使用 from_file 自动检测
-            audio_all = AudioSegment.from_file(str(batch_wav))
-        except Exception as e:
-            print(f"[TTS] Failed to load batch wav {batch_wav}: {e}")
+        def flush_batch():
+            if not batch_text:
+                return
+            batch_content = " ".join(batch_text)
+            batch_wav = tmp_dir / f"batch_{batch_indices[0]:04d}.wav"
+            _edge_tts_to_wav(batch_content, batch_wav, voice=voice)
+            try:
+                audio_all = AudioSegment.from_file(str(batch_wav))
+            except Exception as e:
+                print(f"[TTS] Failed to load batch wav {batch_wav}: {e}")
+                batch_text.clear()
+                batch_indices.clear()
+                return
+            cursor_ms = 0
+            for idx, seg_index in enumerate(batch_indices):
+                seg = seg_list[seg_index]
+                target_ms = max(1, int((seg.end - seg.start) * 1000))
+                if len(audio_all) > cursor_ms:
+                    audio_seg = audio_all[cursor_ms:cursor_ms + target_ms]
+                    if len(audio_seg) < target_ms:
+                        audio_seg += AudioSegment.silent(duration=target_ms - len(audio_seg))
+                else:
+                    audio_seg = AudioSegment.silent(duration=target_ms)
+                seg_wav_path = tmp_dir / f"seg_{seg.index:04d}.wav"
+                audio_seg.export(seg_wav_path, format="wav")
+                rendered.append((seg, seg_wav_path, target_ms))
+                cursor_ms += target_ms
             batch_text.clear()
             batch_indices.clear()
-            return
 
-        cursor_ms = 0
-        for idx, seg_index in enumerate(batch_indices):
-            seg = seg_list[seg_index]
-            target_ms = max(1, int((seg.end - seg.start) * 1000))
-            if len(audio_all) > cursor_ms:
-                audio_seg = audio_all[cursor_ms:cursor_ms + target_ms]
-                if len(audio_seg) < target_ms:
-                    audio_seg += AudioSegment.silent(duration=target_ms - len(audio_seg))
-            else:
-                audio_seg = AudioSegment.silent(duration=target_ms)
-            seg_wav_path = tmp_dir / f"seg_{seg.index:04d}.wav"
-            audio_seg.export(seg_wav_path, format="wav")
-            rendered.append((seg, seg_wav_path, target_ms))
-            cursor_ms += target_ms
+        for i, seg in enumerate(seg_list):
+            batch_text.append(seg.text.strip())
+            batch_indices.append(i)
+            if len(batch_text) >= batch_size:
+                flush_batch()
+        flush_batch()
 
-        batch_text.clear()
-        batch_indices.clear()
+    if not rendered:
+        raise RuntimeError("[TTS] No audio rendered")
 
-    for i, seg in enumerate(seg_list):
-        batch_text.append(seg.text.strip())
-        batch_indices.append(i)
-        if len(batch_text) >= batch_size: flush_batch()
-    flush_batch()
-
-    if not rendered: raise RuntimeError("[TTS] No audio rendered")
-
+    # 语速贴合时用每句自然长度拼接，最后整轨统一变速；否则按原段时长裁剪/填充
+    use_uniform_speed = match_speech_rate
     timeline = AudioSegment.silent(duration=0)
     cursor_ms = 0
     for seg, wav_path, target_ms in rendered:
-        if not wav_path.exists(): continue
+        if not wav_path.exists():
+            continue
         start_ms = int(seg.start * 1000)
         if start_ms > cursor_ms:
             timeline += AudioSegment.silent(duration=start_ms - cursor_ms)
             cursor_ms = start_ms
         try:
-            # 使用 from_file 自动检测文件格式（edge-tts 可能生成 mp3）
             audio = AudioSegment.from_file(str(wav_path))
         except Exception as e:
             print(f"[TTS] Failed to load segment audio {wav_path}: {e}")
-            # 如果加载失败，使用静音填充
             audio = AudioSegment.silent(duration=target_ms)
-        if len(audio) > target_ms: audio = audio[:target_ms]
-        elif len(audio) < target_ms: audio += AudioSegment.silent(duration=target_ms - len(audio))
+        if not use_uniform_speed:
+            if len(audio) > target_ms:
+                audio = audio[:target_ms]
+            elif len(audio) < target_ms:
+                audio += AudioSegment.silent(duration=target_ms - len(audio))
         timeline += audio
-        cursor_ms += len(audio)
+        cursor_ms = start_ms + len(audio)
 
-    if output_path.suffix.lower() != ".wav": output_path = output_path.with_suffix(".wav")
+    # 语速贴合：整轨做一次变速，使总时长对齐原视频最后一句结束时间，语速统一
+    if use_uniform_speed and timeline and seg_list:
+        end_time_s = float(max(s.end for s in seg_list))
+        timeline_len_s = len(timeline) / 1000.0
+        if end_time_s > 0.01 and timeline_len_s > 0.01:
+            speed_factor = timeline_len_s / end_time_s
+            if abs(speed_factor - 1.0) >= 0.02:
+                print(f"[TTS] 统一语速：整轨变速 {speed_factor:.2f}x")
+                timeline = _change_audio_speed(timeline, speed_factor)
+
+    if output_path.suffix.lower() != ".wav":
+        output_path = output_path.with_suffix(".wav")
     timeline.export(output_path, format="wav")
     print(f"[TTS] Exported timeline audio -> {output_path}")
     

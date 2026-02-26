@@ -91,6 +91,8 @@ def complete_workflow(
     model_path: Optional[str] = None,
     replace_video_audio: bool = True,
     use_ai_voice_clone: bool = False,  # 预留接口，暂未实现
+    bgm_path: Optional[str] = None,
+    bgm_volume: float = 0.25,
 ) -> bool:
     """
     完整工作流：下载 → ASR对比 → 翻译 → TTS → 视频换轨
@@ -158,6 +160,9 @@ def complete_workflow(
             export=True,  # 导出JSON和SRT
             ai_rewrite=use_ai_rewrite,  # 默认False（效果不好）
             model_path=model_path,
+            bgm_path=bgm_path,
+            bgm_volume=bgm_volume,
+            match_speech_rate=True,
         )
         
         if not segments:
@@ -191,7 +196,14 @@ def complete_workflow(
         try:
             from subtitle.video import replace_audio_in_video
             
-            output_video = replace_audio_in_video(video_path_obj, str(audio_path))
+            output_video = replace_audio_in_video(
+                video_path_obj,
+                str(audio_path),
+                preserve_background=True,
+                bgm_path=bgm_path,
+                bgm_volume=bgm_volume,
+                default_bgm_path=os.environ.get("SUBTITLE_DEFAULT_BGM"),
+            )
             print(f"\n✅ 最终视频生成完成: {Path(output_video).name}")
             print(f"   文件路径: {output_video}")
         except Exception as e:
@@ -257,6 +269,8 @@ def main():
     parser.add_argument("--ai-rewrite", action="store_true", help="启用AI改写（注意：效果可能不理想）")
     parser.add_argument("--model-path", type=str, help="AI改写模型路径（启用 --ai-rewrite 时必需）")
     parser.add_argument("--no-replace", action="store_true", help="不替换视频音轨（只生成音频）")
+    parser.add_argument("--bgm", type=str, default=None, help="纯音乐 BGM 文件路径（原视频仅人声时使用）")
+    parser.add_argument("--bgm-volume", type=float, default=0.25, help="BGM 音量 0.0–1.0（默认 0.25）")
     
     args = parser.parse_args()
     
@@ -283,6 +297,8 @@ def main():
         use_ai_rewrite=args.ai_rewrite,
         model_path=args.model_path,
         replace_video_audio=not args.no_replace,
+        bgm_path=args.bgm,
+        bgm_volume=args.bgm_volume,
     )
     
     if success:

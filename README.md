@@ -53,6 +53,15 @@
    - 自动匹配视频和字幕文件
    - 进度显示和错误处理
 
+10. **🎵 背景音乐**
+   - 原视频有背景音乐 + 人声：保留原背景（压低音量）与 AI 配音混合
+   - 原视频仅人声：可指定纯音乐（`--bgm path/to/music.mp3`），或使用**默认 BGM**（无需每次指定）：
+     - 设置环境变量 `SUBTITLE_DEFAULT_BGM` 为 BGM 文件路径，或
+     - 在项目下放置 `assets/default_bgm.mp3`，将自动作为默认 BGM 与 AI 配音混合
+
+11. **⏱️ 语速贴合**
+   - 默认按原视频语速贴合：逐句 TTS 用统一语速生成，**整轨做一次全局变速**，使全片语速一致、听感自然；可用 `--no-match-speech-rate` 关闭（更快但语速不匹配）
+
 ## 🛠️ 环境要求
 
 - **Python**: >= 3.12
@@ -187,6 +196,8 @@ uv run python workflow.py "https://www.youtube.com/watch?v=VIDEO_ID" `
 | `--ai-rewrite` | 启用 AI 改写（需要模型） | False |
 | `--model-path` | AI 改写模型路径 | None |
 | `--no-replace` | 不替换视频音轨 | False |
+| `--bgm` | 纯音乐 BGM 文件路径（原视频仅人声时使用，与 AI 配音混合） | None |
+| `--bgm-volume` | BGM 音量 0.0–1.0 | 0.25 |
 
 **完整工作流执行步骤**：
 

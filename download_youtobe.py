@@ -140,6 +140,7 @@ def download_youtube_video(url):
         safe_title = f"{idx:02d}_{title}"
         outtmpl = os.path.join(bv_dir, f"{safe_title}.%(ext)s")
 
+        # 优先使用 web_embedded/android 等客户端，减少 YouTube 403 概率（参见 yt-dlp wiki）
         ydl_opts_download = {
             'format': f'bestvideo[ext=mp4][vcodec!=av01][height<={MAX_HEIGHT}]+bestaudio[ext=m4a]/best',
             'merge_output_format': 'mp4',
@@ -148,14 +149,22 @@ def download_youtube_video(url):
             'writesubtitles': True,
             'writeautomaticsub': True,
             'subtitleslangs': ['en'],
-            'progress_hooks': [progress_hook]
+            'progress_hooks': [progress_hook],
+            # 尝试不同 player_client，避免单一客户端被 403
+            'extractor_args': {'youtube': {'player_client': ['web_embedded', 'android', 'web']}},
         }
 
         success = False
+        last_403 = False  # 若上次是 403，下次用更保守的格式重试
         for attempt in range(1, MAX_RETRY + 1):
             try:
+                opts = dict(ydl_opts_download)
+                # 若上次遇到 403，改用更保守的格式（有时能拿到不同 CDN/格式，避免 403）
+                if last_403:
+                    opts['format'] = 'bestvideo[height<=720][vcodec!=av01]+bestaudio/best[height<=720]/best'
+                    print(f"[重试] 使用保守格式 (height<=720) 以避免 403")
                 print(f"开始下载 {safe_title} （尝试 {attempt}/{MAX_RETRY}）")
-                with yt_dlp.YoutubeDL(ydl_opts_download) as ydl:
+                with yt_dlp.YoutubeDL(opts) as ydl:
                     ydl.download([v_info['webpage_url']])
 
                 mp4_file = outtmpl.replace('%(ext)s', 'mp4')
@@ -174,6 +183,8 @@ def download_youtube_video(url):
                 success = True
                 break
             except Exception as e:
+                err_str = str(e)
+                last_403 = "403" in err_str or "Forbidden" in err_str
                 print(f"{safe_title} 下载失败: {e}")
                 time.sleep(2)
 

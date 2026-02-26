@@ -1,4 +1,5 @@
 import argparse
+import os
 from pathlib import Path
 import traceback
 from typing import List
@@ -28,6 +29,9 @@ def process_single_file(
     whisper_model: str = "small",
     enable_weight_filter: bool = True,
     min_weight: float = 0.4,
+    bgm_path: str | None = None,
+    bgm_volume: float = 0.25,
+    match_speech_rate: bool = True,
 ):
     """
     处理单个文件
@@ -128,9 +132,18 @@ def process_single_file(
     audio_out = None
     if tts:
         try:
+            # 确定视频路径（用于时间轴检测）
+            video_path_for_tts = None
+            if file_path.suffix.lower() in [".mp4", ".avi", ".mkv", ".flv", ".webm", ".mov"]:
+                video_path_for_tts = str(file_path)
+            elif video_replace:
+                video_path_for_tts = video_replace
+            
             audio_out = synthesize_audio_timeline(
                 new_segments,
                 str(file_path.with_suffix(".mp3")),
+                video_path=video_path_for_tts,
+                match_speech_rate=match_speech_rate,
             )
             print(f"[TTS] Audio generated: {audio_out}")
         except Exception as e:
@@ -142,7 +155,14 @@ def process_single_file(
     # ==================================================
     if video_replace and audio_out:
         try:
-            out_video = replace_audio_in_video(video_replace, audio_out)
+            out_video = replace_audio_in_video(
+                Path(video_replace),
+                audio_out,
+                preserve_background=True,
+                bgm_path=bgm_path,
+                bgm_volume=bgm_volume,
+                default_bgm_path=os.environ.get("SUBTITLE_DEFAULT_BGM"),
+            )
             print(f"[Video] Output: {out_video}")
         except Exception:
             print("[Error] Video replace failed")
@@ -167,6 +187,9 @@ def process_batch(
     whisper_model: str = "small",
     enable_weight_filter: bool = True,
     min_weight: float = 0.4,
+    bgm_path: str | None = None,
+    bgm_volume: float = 0.25,
+    match_speech_rate: bool = True,
 ) -> List[Path]:
     """
     批量处理目录中的字幕文件
@@ -243,6 +266,9 @@ def process_batch(
                 whisper_model=whisper_model,
                 enable_weight_filter=enable_weight_filter,
                 min_weight=min_weight,
+                bgm_path=bgm_path,
+                bgm_volume=bgm_volume,
+                match_speech_rate=match_speech_rate,
             )
             
             if segments:
@@ -314,6 +340,9 @@ def main():
     parser.add_argument("--enable-weight-filter", action="store_true", default=True, help="启用权重筛选（默认启用，删除低权重段落）")
     parser.add_argument("--no-weight-filter", action="store_false", dest="enable_weight_filter", help="禁用权重筛选")
     parser.add_argument("--min-weight", type=float, default=0.4, help="最小权重阈值（0-1，默认 0.4，低于此值的段落将被删除）")
+    parser.add_argument("--bgm", type=str, default=None, help="纯音乐 BGM 文件路径（原视频仅人声时使用，与 AI 配音混合）")
+    parser.add_argument("--bgm-volume", type=float, default=0.25, help="BGM 音量 0.0–1.0（默认 0.25）")
+    parser.add_argument("--no-match-speech-rate", action="store_true", help="不按原视频语速贴合（使用批量 TTS，更快但语速不匹配）")
 
     args = parser.parse_args()
 
@@ -341,6 +370,9 @@ def main():
             whisper_model=args.whisper_model,
             enable_weight_filter=args.enable_weight_filter,
             min_weight=args.min_weight,
+            bgm_path=args.bgm,
+            bgm_volume=args.bgm_volume,
+            match_speech_rate=not args.no_match_speech_rate,
         )
     
     # 批量处理模式
@@ -360,6 +392,9 @@ def main():
             whisper_model=args.whisper_model,
             enable_weight_filter=args.enable_weight_filter,
             min_weight=args.min_weight,
+            bgm_path=args.bgm,
+            bgm_volume=args.bgm_volume,
+            match_speech_rate=not args.no_match_speech_rate,
         )
 
 

@@ -10,7 +10,7 @@ dependencies = [
     "pysrt>=1.1.2",
     "pyttsx3>=2.99",
     # 视频下载功能
-    "yt-dlp>=2023.12.30",
+    "yt-dlp>=2024.8.6",  # 较新版本对 YouTube 403 有更好支持
     # AI Rewrite 功能
     "transformers>=4.30.0",
     "torch>=2.0.0",
