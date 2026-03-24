@@ -493,36 +493,54 @@ def process_with_asr_comparison(
     if not video_path_obj.exists():
         raise FileNotFoundError(f"视频文件不存在: {video_path}")
     
-    # 1. ASR 生成
-    print(f"\n[1/3] ASR 识别：使用 Whisper {whisper_model} 模型...")
-    audio_path = video_path_obj.with_suffix(".wav")
-    
+    # 0. 尝试加载 ASR 缓存
+    asr_segments = None
     try:
-        extract_audio(str(video_path), str(audio_path))
-        print(f"[ASR Compare] 音频已提取: {audio_path}")
-    except Exception as e:
-        raise RuntimeError(f"音频提取失败: {e}")
+        from subtitle.cache_manager import load_asr_cache
+        asr_segments = load_asr_cache(video_path, whisper_model)
+    except Exception:
+        pass
     
-    try:
-        # 修改 audio_to_segments 以支持模型参数
-        from whisper import load_model
+    if asr_segments is not None:
+        print(f"[ASR Compare] 使用缓存的 ASR 结果（{len(asr_segments)} 段落），跳过 ASR 识别")
+    else:
+        # 1. ASR 生成
+        print(f"\n[1/3] ASR 识别：使用 Whisper {whisper_model} 模型...")
+        audio_path = video_path_obj.with_suffix(".wav")
         
-        print(f"[ASR Compare] 加载 Whisper 模型: {whisper_model}...")
-        model = load_model(whisper_model)
-        result = model.transcribe(str(audio_path))
+        try:
+            extract_audio(str(video_path), str(audio_path))
+            print(f"[ASR Compare] 音频已提取: {audio_path}")
+        except Exception as e:
+            raise RuntimeError(f"音频提取失败: {e}")
         
-        asr_segments = []
-        for i, seg in enumerate(result["segments"]):
-            asr_segments.append(Segment(
-                index=i + 1,
-                start=float(seg["start"]),
-                end=float(seg["end"]),
-                text=seg["text"].strip()
-            ))
-        
-        print(f"[ASR Compare] ASR 生成完成：{len(asr_segments)} 个段落")
-    except Exception as e:
-        raise RuntimeError(f"ASR 识别失败: {e}")
+        try:
+            # 修改 audio_to_segments 以支持模型参数
+            from whisper import load_model
+            
+            print(f"[ASR Compare] 加载 Whisper 模型: {whisper_model}...")
+            model = load_model(whisper_model)
+            result = model.transcribe(str(audio_path))
+            
+            asr_segments = []
+            for i, seg in enumerate(result["segments"]):
+                asr_segments.append(Segment(
+                    index=i + 1,
+                    start=float(seg["start"]),
+                    end=float(seg["end"]),
+                    text=seg["text"].strip()
+                ))
+            
+            print(f"[ASR Compare] ASR 生成完成：{len(asr_segments)} 个段落")
+            
+            # 保存 ASR 缓存
+            try:
+                from subtitle.cache_manager import save_asr_cache
+                save_asr_cache(video_path, asr_segments, whisper_model)
+            except Exception:
+                pass
+        except Exception as e:
+            raise RuntimeError(f"ASR 识别失败: {e}")
     
     # 2. 解析 VTT（如果提供）
     vtt_segments = []

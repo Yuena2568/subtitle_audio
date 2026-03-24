@@ -1,123 +1,143 @@
 # subtitle/translator.py
+"""
+翻译模块
+支持 MyMemory（免费，国内可用）和 Google Translate
+"""
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List
+
 try:
     import requests
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
 
-def translate_segment(text: str, target_lang: str = "zh") -> str:
-    """
-    翻译单段文本。
-    当前使用免费 API（示例为百度翻译开放接口或谷歌翻译网页接口）
-    可替换为其他免费 API 或本地翻译库。
-    
-    Args:
-        text: 待翻译的文本
-        target_lang: 目标语言，例如 'zh', 'en', 'ja'
-        
-    Returns:
-        翻译后的文本
-    """
+try:
+    from deep_translator import MyMemoryTranslator
+    MYMEMORY_AVAILABLE = True
+except ImportError:
+    MYMEMORY_AVAILABLE = False
+
+
+# ================== MyMemory 翻译 ==================
+def _mymemory_translate(text: str, target_lang: str = "zh") -> str:
+    """使用 MyMemory 翻译单段文本"""
+    if not MYMEMORY_AVAILABLE:
+        raise ImportError("deep-translator 未安装")
+    lang_map = {"zh": "zh-CN", "en": "en-US", "ja": "ja-JP", "ko": "ko-KR"}
+    target = lang_map.get(target_lang, target_lang)
+    t = MyMemoryTranslator(source="en-US", target=target)
+    return t.translate(text)
+
+
+def _mymemory_batch(texts: List[str], target_lang: str = "zh", batch_size: int = 5) -> List[str]:
+    """MyMemory 批量翻译（逐条，因为 MyMemory 不支持批量拼接）"""
+    results = []
+    for i, text in enumerate(texts):
+        try:
+            translated = _mymemory_translate(text, target_lang)
+            results.append(translated)
+        except Exception as e:
+            print(f"[MyMemory] 段落 {i} 翻译失败: {e}")
+            results.append(text)
+        # MyMemory 限速：每秒不超过 4 个请求
+        time.sleep(0.3)
+        if (i + 1) % 10 == 0:
+            time.sleep(1.0)  # 每 10 条额外等 1 秒
+    return results
+
+
+# ================== Google 翻译（备用） ==================
+def _google_translate(text: str, target_lang: str = "zh") -> str:
+    """使用 Google 翻译单段文本"""
     if not REQUESTS_AVAILABLE:
-        print("[Warning] requests 模块未安装，翻译功能不可用。请使用 pip install requests 安装")
-        return text  # 没有 requests 时返回原文
-    
-    if not text or not text.strip():
         return text
-    
-    # 简单示例：调用 Google 翻译网页版 API
     try:
         url = "https://translate.googleapis.com/translate_a/single"
         params = {
             "client": "gtx",
-            "sl": "auto",           # 自动检测源语言
-            "tl": target_lang,      # 目标语言
+            "sl": "auto",
+            "tl": target_lang,
             "dt": "t",
             "q": text
         }
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        # 返回结构：[ [ [translated_text, original_text, ...], ...], ... ]
         result = response.json()
         translated_text = "".join([item[0] for item in result[0] if item[0]])
         return translated_text if translated_text else text
     except Exception as e:
+        raise RuntimeError(f"Google 翻译失败: {e}")
+
+
+# ================== 对外接口 ==================
+def translate_segment(text: str, target_lang: str = "zh") -> str:
+    """
+    翻译单段文本。
+    优先 MyMemory（国内可用），失败则回退 Google。
+    """
+    if not text or not text.strip():
+        return text
+
+    # 优先 MyMemory
+    if MYMEMORY_AVAILABLE:
+        try:
+            return _mymemory_translate(text, target_lang)
+        except Exception as e:
+            print(f"[Translator] MyMemory 失败，回退 Google: {e}")
+
+    # 回退 Google
+    try:
+        return _google_translate(text, target_lang)
+    except Exception as e:
         print(f"[Translator] 翻译失败: {e}")
-        return text  # 失败时返回原文
+        return text
 
 
-def translate_batch(texts: list[str], target_lang: str = "zh", batch_size: int = 10) -> list[str]:
+def translate_batch(texts: List[str], target_lang: str = "zh", batch_size: int = 10) -> List[str]:
     """
-    批量翻译文本列表
-    
-    Args:
-        texts: 待翻译的文本列表
-        target_lang: 目标语言
-        batch_size: 每批处理的文本数量（Google API 建议不要超过10个）
-        
-    Returns:
-        翻译后的文本列表
+    批量翻译文本列表。
+    优先 MyMemory，失败则回退 Google（合并多行翻译）。
     """
-    if not REQUESTS_AVAILABLE:
-        print("[Warning] requests 模块未安装，批量翻译功能不可用")
-        return texts
-    
     if not texts:
         return []
-    
+
+    # 优先 MyMemory（逐条翻译，但并发加速）
+    if MYMEMORY_AVAILABLE:
+        try:
+            print(f"[Translator] 使用 MyMemory 翻译（{len(texts)} 段）")
+            return _mymemory_batch(texts, target_lang)
+        except Exception as e:
+            print(f"[Translator] MyMemory 批量翻译失败，回退 Google: {e}")
+
+    # 回退 Google（合并多行）
+    if not REQUESTS_AVAILABLE:
+        print("[Warning] 无可用翻译服务")
+        return texts
+
+    print(f"[Translator] 使用 Google 翻译（{len(texts)} 段）")
     translated = []
-    
-    # 分批处理
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        
         try:
-            # 合并多个文本，用换行符分隔（Google 翻译支持多行）
             combined_text = "\n".join(batch)
-            
-            url = "https://translate.googleapis.com/translate_a/single"
-            params = {
-                "client": "gtx",
-                "sl": "auto",
-                "tl": target_lang,
-                "dt": "t",
-                "q": combined_text
-            }
-            
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            result = response.json()
-            
-            # 提取翻译结果
-            if result and result[0]:
-                # Google 翻译返回的格式：每个句子对应一个翻译
-                translated_lines = []
-                for item in result[0]:
-                    if item and len(item) > 0:
-                        translated_lines.append(item[0] if item[0] else "")
-                
-                # 如果翻译行数与原文行数一致，直接使用
-                if len(translated_lines) == len(batch):
-                    translated.extend(translated_lines)
-                else:
-                    # 如果不一致，尝试按换行符分割
-                    combined_translated = "".join([item[0] for item in result[0] if item[0]])
-                    # 简单处理：如果不能正确分割，逐段翻译
-                    if len(batch) == 1:
-                        translated.append(combined_translated)
-                    else:
-                        # 回退到逐段翻译
-                        for text in batch:
-                            translated.append(translate_segment(text, target_lang))
+            translated_text = _google_translate(combined_text, target_lang)
+            # 按换行分割回各段
+            lines = translated_text.split("\n")
+            if len(lines) == len(batch):
+                translated.extend(lines)
             else:
-                # 回退到逐段翻译
+                # 行数不匹配，逐段翻译
                 for text in batch:
-                    translated.append(translate_segment(text, target_lang))
-                    
+                    try:
+                        translated.append(_google_translate(text, target_lang))
+                    except Exception:
+                        translated.append(text)
         except Exception as e:
-            print(f"[Translator] 批量翻译失败（批次 {i//batch_size + 1}），回退到逐段翻译: {e}")
-            # 回退到逐段翻译
+            print(f"[Translator] 批次 {i//batch_size + 1} 失败: {e}")
             for text in batch:
-                translated.append(translate_segment(text, target_lang))
-    
+                translated.append(text)
+
     return translated if len(translated) == len(texts) else texts

@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from subtitle.model import Segment
 from subtitle.translator import translate_segment, translate_batch
 from subtitle.tts import speak
@@ -54,6 +54,7 @@ def run_pipeline(
     language: str = "zh",
     optimize_json: bool = False,  # 保留此参数以兼容 main.py，但暂不使用
     use_batch_translate: bool = True,  # 是否使用批量翻译（默认启用）
+    video_path: str | None = None,  # 用于翻译缓存
 ) -> List[Segment]:
     """
     核心字幕处理流水线（优化版）
@@ -90,25 +91,73 @@ def run_pipeline(
         else:
             print(f"[Pipeline] 开始翻译（目标语言: {language}，检测到源语言: {detected_lang}）...")
             
-            # 使用逐段翻译模式（更可靠，批量翻译可能导致格式问题）
-            print(f"[Pipeline] 使用逐段翻译模式（共 {len(segments)} 个段落）")
-            translated_count = 0
+            # 先尝试翻译缓存
+            cached_translated = None
+            if video_path:
+                from subtitle.cache_manager import load_translate_cache, save_translate_cache
+                source_texts = [seg.text for seg in segments]
+                cached_translated = load_translate_cache(video_path, source_texts, language)
             
-            for i, seg in enumerate(segments):
+            if cached_translated and len(cached_translated) == len(segments):
+                print("[Pipeline] 使用翻译缓存")
+                for seg, translated in zip(segments, cached_translated):
+                    seg.text = translated
+            elif use_batch_translate:
+                # 使用批量翻译（并发 + 换行拼接 + 模糊对齐）
+                print(f"[Pipeline] 使用批量翻译模式（共 {len(segments)} 个段落）")
+                source_texts = [seg.text for seg in segments]
+                
                 try:
-                    if seg.text.strip():
-                        translated_text = translate_segment(seg.text, target_lang=language)
-                        seg.text = translated_text
-                        translated_count += 1
-                        
-                        # 每50个段落显示一次进度
-                        if (i + 1) % 50 == 0:
+                    translated_texts = translate_batch(source_texts, target_lang=language, batch_size=40)
+                    
+                    # 每100段打印进度
+                    translated_count = 0
+                    for i, (seg, translated) in enumerate(zip(segments, translated_texts)):
+                        seg.text = translated
+                        if translated and translated.strip():
+                            translated_count += 1
+                        if (i + 1) % 100 == 0:
                             print(f"[Pipeline] 已翻译 {i + 1}/{len(segments)} 个段落")
+                    
+                    print(f"[Pipeline] 批量翻译完成（成功: {translated_count}/{len(segments)}）")
+                    
+                    # 保存翻译缓存
+                    if video_path:
+                        try:
+                            from subtitle.cache_manager import save_translate_cache
+                            save_translate_cache(video_path, source_texts, translated_texts, language)
+                        except Exception:
+                            pass
+                    
                 except Exception as e:
-                    print(f"[Pipeline] 段落 {seg.index} 翻译失败: {e}")
-                    # 失败时保留原文
-            
-            print(f"[Pipeline] 翻译完成（成功: {translated_count}/{len(segments)}）")
+                    print(f"[Pipeline] 批量翻译失败，回退到逐段翻译: {e}")
+                    translated_count = 0
+                    for i, seg in enumerate(segments):
+                        try:
+                            if seg.text.strip():
+                                translated_text = translate_segment(seg.text, target_lang=language)
+                                seg.text = translated_text
+                                translated_count += 1
+                                if (i + 1) % 100 == 0:
+                                    print(f"[Pipeline] 已翻译 {i + 1}/{len(segments)} 个段落")
+                        except Exception as e2:
+                            print(f"[Pipeline] 段落 {seg.index} 翻译失败: {e2}")
+                    print(f"[Pipeline] 逐段翻译完成（成功: {translated_count}/{len(segments)}）")
+            else:
+                # 逐段翻译模式（兼容旧逻辑）
+                print(f"[Pipeline] 使用逐段翻译模式（共 {len(segments)} 个段落）")
+                translated_count = 0
+                for i, seg in enumerate(segments):
+                    try:
+                        if seg.text.strip():
+                            translated_text = translate_segment(seg.text, target_lang=language)
+                            seg.text = translated_text
+                            translated_count += 1
+                            if (i + 1) % 100 == 0:
+                                print(f"[Pipeline] 已翻译 {i + 1}/{len(segments)} 个段落")
+                    except Exception as e:
+                        print(f"[Pipeline] 段落 {seg.index} 翻译失败: {e}")
+                print(f"[Pipeline] 翻译完成（成功: {translated_count}/{len(segments)}）")
     
     # -----------------------------
     # 2️⃣ 强化优化（在翻译之后进行）

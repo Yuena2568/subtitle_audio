@@ -1,5 +1,7 @@
 import argparse
 import os
+import subprocess
+import sys
 from pathlib import Path
 import traceback
 from typing import List
@@ -32,6 +34,7 @@ def process_single_file(
     bgm_path: str | None = None,
     bgm_volume: float = 0.25,
     match_speech_rate: bool = True,
+    voice: str = "zh-CN-XiaoxiaoNeural",
 ):
     """
     处理单个文件
@@ -144,6 +147,7 @@ def process_single_file(
                 str(file_path.with_suffix(".mp3")),
                 video_path=video_path_for_tts,
                 match_speech_rate=match_speech_rate,
+                voice=voice,
             )
             print(f"[TTS] Audio generated: {audio_out}")
         except Exception as e:
@@ -190,6 +194,7 @@ def process_batch(
     bgm_path: str | None = None,
     bgm_volume: float = 0.25,
     match_speech_rate: bool = True,
+    voice: str = "zh-CN-XiaoxiaoNeural",
 ) -> List[Path]:
     """
     批量处理目录中的字幕文件
@@ -269,6 +274,7 @@ def process_batch(
                 bgm_path=bgm_path,
                 bgm_volume=bgm_volume,
                 match_speech_rate=match_speech_rate,
+                voice=voice,
             )
             
             if segments:
@@ -343,8 +349,22 @@ def main():
     parser.add_argument("--bgm", type=str, default=None, help="纯音乐 BGM 文件路径（原视频仅人声时使用，与 AI 配音混合）")
     parser.add_argument("--bgm-volume", type=float, default=0.25, help="BGM 音量 0.0–1.0（默认 0.25）")
     parser.add_argument("--no-match-speech-rate", action="store_true", help="不按原视频语速贴合（使用批量 TTS，更快但语速不匹配）")
+    parser.add_argument("--voice", type=str, default="zh-CN-XiaoxiaoNeural", help="TTS 语音（默认: zh-CN-XiaoxiaoNeural）")
+    parser.add_argument("--list-voices", action="store_true", help="列出所有可用的 TTS 语音")
 
     args = parser.parse_args()
+
+    # 列出语音
+    if args.list_voices:
+        try:
+            result = subprocess.run(
+                ["edge-tts", "--list-voices"],
+                capture_output=True, text=True, check=True
+            )
+            print(result.stdout)
+        except Exception as e:
+            print(f"[Error] 获取语音列表失败: {e}")
+        sys.exit(0)
 
     # 检查参数
     if not args.file and not args.dir:
@@ -373,6 +393,7 @@ def main():
             bgm_path=args.bgm,
             bgm_volume=args.bgm_volume,
             match_speech_rate=not args.no_match_speech_rate,
+            voice=args.voice,
         )
     
     # 批量处理模式
@@ -395,6 +416,7 @@ def main():
             bgm_path=args.bgm,
             bgm_volume=args.bgm_volume,
             match_speech_rate=not args.no_match_speech_rate,
+            voice=args.voice,
         )
 
 

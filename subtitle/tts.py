@@ -408,39 +408,49 @@ def synthesize_audio_timeline(
     if not rendered:
         raise RuntimeError("[TTS] No audio rendered")
 
-    # 语速贴合时用每句自然长度拼接，最后整轨统一变速；否则按原段时长裁剪/填充
-    use_uniform_speed = match_speech_rate
-    timeline = AudioSegment.silent(duration=0)
+    # 自然语速 + 智能错开：每句按自然语速播放，超出原时间窗口则顺移后续段落
+    # 不拉伸、不压缩，保证语音质量自然
+    print("[TTS] 自然语速模式：按原时间轴对齐，超出则顺移")
+
+    # 第一遍：计算每段的实际播放位置（自然语速，不拉伸）
+    GAP_MS = 80  # 段落间最小间隔（毫秒）
+    placements = []  # [(start_ms, end_ms, wav_path), ...]
     cursor_ms = 0
-    for seg, wav_path, target_ms in rendered:
+
+    for seg, wav_path, orig_target_ms in rendered:
         if not wav_path.exists():
             continue
-        start_ms = int(seg.start * 1000)
-        if start_ms > cursor_ms:
-            timeline += AudioSegment.silent(duration=start_ms - cursor_ms)
-            cursor_ms = start_ms
         try:
             audio = AudioSegment.from_file(str(wav_path))
         except Exception as e:
-            print(f"[TTS] Failed to load segment audio {wav_path}: {e}")
-            audio = AudioSegment.silent(duration=target_ms)
-        if not use_uniform_speed:
-            if len(audio) > target_ms:
-                audio = audio[:target_ms]
-            elif len(audio) < target_ms:
-                audio += AudioSegment.silent(duration=target_ms - len(audio))
-        timeline += audio
-        cursor_ms = start_ms + len(audio)
+            print(f"[TTS] 加载段落 {seg.index} 失败: {e}，跳过")
+            continue
+        actual_ms = len(audio)
 
-    # 语速贴合：整轨做一次变速，使总时长对齐原视频最后一句结束时间，语速统一
-    if use_uniform_speed and timeline and seg_list:
-        end_time_s = float(max(s.end for s in seg_list))
-        timeline_len_s = len(timeline) / 1000.0
-        if end_time_s > 0.01 and timeline_len_s > 0.01:
-            speed_factor = timeline_len_s / end_time_s
-            if abs(speed_factor - 1.0) >= 0.02:
-                print(f"[TTS] 统一语速：整轨变速 {speed_factor:.2f}x")
-                timeline = _change_audio_speed(timeline, speed_factor)
+        # 原视频期望的开始位置
+        desired_start = int(seg.start * 1000)
+
+        # 实际开始位置 = max(光标位置, 原始时间轴位置)
+        # 这样尽量贴近原时间轴，但不重叠
+        actual_start = max(cursor_ms, desired_start)
+
+        actual_end = actual_start + actual_ms
+        placements.append((actual_start, actual_end, wav_path, audio))
+        cursor_ms = actual_end + GAP_MS
+
+    if not placements:
+        raise RuntimeError("[TTS] No audio to place")
+
+    # 第二遍：拼接时间轴
+    total_ms = placements[-1][1] + 500  # 最后一段结束后多留 500ms
+    timeline = AudioSegment.silent(duration=total_ms)
+
+    for start_ms, end_ms, wav_path, audio in placements:
+        timeline = timeline.overlay(audio, position=start_ms)
+
+    # 裁掉尾部多余静音
+    if len(timeline) > placements[-1][1] + 200:
+        timeline = timeline[:placements[-1][1] + 200]
 
     if output_path.suffix.lower() != ".wav":
         output_path = output_path.with_suffix(".wav")
